@@ -1,0 +1,5 @@
+.env
+order.json
+eatfirst-storage-state.json
+artifacts/
+node_modules/

@@ -1,0 +1,14 @@
+{
+  "name": "eatfirst-order",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "login": "node scripts/eatfirst.mjs login",
+    "order": "node scripts/eatfirst.mjs order --config order.json",
+    "order:dry-run": "node scripts/eatfirst.mjs order --config order.json --dry-run",
+    "inspect": "node scripts/eatfirst.mjs inspect"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.1"
+  }
+}

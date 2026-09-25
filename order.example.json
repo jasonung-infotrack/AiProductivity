@@ -1,0 +1,10 @@
+{
+  "day": "Tomorrow",
+  "menuUrl": "https://www.eatfirst.com/en-au/canteen",
+  "ordersUrl": "https://www.eatfirst.com/en-au/orders",
+  "items": [
+    { "name": "Chicken Katsu", "quantity": 1 },
+    { "name": "Beef Burrito Bowl", "quantity": 1 },
+    { "name": "Caesar Salad", "quantity": 1 }
+  ]
+}
