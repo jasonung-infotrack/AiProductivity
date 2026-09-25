@@ -3,9 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "check": "node scripts/eatfirst.mjs check",
     "login": "node scripts/eatfirst.mjs login",
-    "order": "node scripts/eatfirst.mjs order --config order.json",
-    "order:dry-run": "node scripts/eatfirst.mjs order --config order.json --dry-run",
+    "orders": "node scripts/eatfirst.mjs orders",
+    "menu": "node scripts/eatfirst.mjs menu",
+    "order": "node scripts/eatfirst.mjs order",
+    "cancel": "node scripts/eatfirst.mjs cancel",
     "inspect": "node scripts/eatfirst.mjs inspect"
   },
   "devDependencies": {
