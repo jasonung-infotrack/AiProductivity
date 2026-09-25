@@ -4,11 +4,17 @@ Logs in to EatFirst and places, repeats or changes a canteen order, either on de
 (`/eatfirst-order`) or on a schedule through a Claude Routine. There is no static order file:
 
 - **Repeat.** With order history, it orders what you had on the same weekday last week (or, if
-  there was nothing that day, your most recent order).
+  there was nothing that day, your most recent order), including the options you chose (sauce,
+  sub size), which it reads from the orders dashboard.
 - **First order.** With no history, Claude shows you the day's menu and asks what you want. On a
   Routine it can't ask, so the run stops and tells you a first order needs your choice.
 - **Change.** "Change my order to X" cancels the existing order for that day and places X.
   "Cancel my order" just cancels it. Without either instruction, an existing order is left alone.
+  Once the canteen's cut-off has passed (around 11am–noon the day before), an order can't be
+  changed or cancelled.
+- **Within the subsidy.** It never checks out unless the cart's "Total to pay" is 0.00 credits.
+  If last week's order no longer fits, it stops and says how much would be charged; `menu` shows
+  the day's subsidy and flags items that exceed it. `--allow-payment` is the only override.
 
 ## One-off setup
 
@@ -26,34 +32,38 @@ Logs in to EatFirst and places, repeats or changes a canteen order, either on de
 ```bash
 npm run check                                   # reports whether credentials are present (never their values)
 npm run login                                   # proves the credentials and selectors work, saves the session
-npm run orders -- --day today                   # prints local history and a snapshot of the orders page
-npm run menu -- --day today                     # prints a snapshot of the day's menu
-npm run order -- --day today --item "Chicken Katsu" --dry-run   # adds it to the cart and stops before confirming
-npm run order -- --day today --item "Chicken Katsu"             # places the order
-npm run order -- --day today --item "Caesar Salad" --replace    # cancels today's order, then orders the salad
-npm run cancel -- --day today                   # cancels today's order
+npm run orders -- --day friday                  # lists the site's orders and what a repeat would place
+npm run menu -- --day friday                    # lists the day's menu with prices and which items need options
+npm run repeat -- --day friday --dry-run        # fills the cart with last week's order and stops before Checkout
+npm run repeat -- --day friday                  # places it
+npm run order -- --day friday --item "Mt Franklin Water (600ML)" --item "Chicken Schnitzel Salad" --option "NO SAUCE"
+npm run order -- --day friday --item "Steak Melt" --option "NO SAUCE" --replace   # cancels Friday's order, then orders this
+npm run cancel -- --day friday                  # cancels Friday's order
 ```
 
 `--day` accepts `today` (the default), `tomorrow`, a weekday name, or `YYYY-MM-DD`, resolved in
-Australia/Sydney. `--item` is matched case-insensitively as a substring of the menu item's name.
-Every placed or cancelled order is appended to `order-history.json` (gitignored) as a fallback
-record; the site's orders page stays the source of truth.
+Australia/Sydney. `--item` is the exact menu name (case-insensitive) and can repeat; `--quantity`
+and `--option` apply to the `--item` before them. Every placed or cancelled order is appended to
+`order-history.json` (gitignored) as a fallback record; the site's orders dashboard stays the
+source of truth.
 
 If a step fails, `artifacts/` gets a screenshot and an ARIA snapshot of the page it stopped on.
-Use `npm run inspect -- <url>` to capture any page for selector tuning.
+Use `npm run inspect -- <url>` to capture any page for selector tuning. The site structure the
+script relies on is documented in the header of `scripts/eatfirst.mjs`.
 
 ## Schedule it with a Routine
 
-Ask Claude in a session that has this skill, for example:
+The canteen closes orders around 11am–noon the day before, so schedule the run the day before
+(or earlier) and name the day. Ask Claude in a session that has this skill, for example:
 
-> Create a routine named "EatFirst lunch order" that runs at 9:10am Sydney time Monday to Friday,
-> starts a fresh session, and runs `/eatfirst-order`.
+> Create a routine named "EatFirst lunch order" that runs at 9:00am Sydney time every Thursday,
+> starts a fresh session, and runs `/eatfirst-order` for Friday.
 
-That maps to a fresh-session Routine with cron `CRON_TZ=Australia/Sydney 10 9 * * 1-5` and the
-prompt "Run the eatfirst-order skill and place today's order." Each run repeats last week's
-order for that weekday. The skill's preflight checks stop the run with a clear message if
-credentials or network access are missing, and a run with no order history stops and asks you
-to place the first order interactively.
+That maps to a fresh-session Routine with cron `CRON_TZ=Australia/Sydney 0 9 * * 4` and the
+prompt "Run the eatfirst-order skill and place Friday's order." Each run repeats last week's
+Friday order. The skill's preflight checks stop the run with a clear message if credentials or
+network access are missing, and a run with no order history stops and asks you to place the
+first order interactively.
 
 ## Where the skill lives
 

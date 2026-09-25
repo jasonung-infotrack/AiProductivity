@@ -17,7 +17,9 @@
  *
  * <day> is "today" (default), "tomorrow", a weekday name, or YYYY-MM-DD, resolved in Australia/Sydney.
  * `repeat` and `order` refuse to place a second order on a day that already has one unless
- * --replace is given, in which case they cancel the existing order first.
+ * --replace is given, in which case they cancel the existing order first. They also refuse to
+ * check out unless the cart's "Total to pay" is 0.00, i.e. the subsidy covers the whole order;
+ * --allow-payment is the only override.
  *
  * Site structure this relies on (verified 2026-09-25):
  *   - Login is two-step: email, "Next", then password.
@@ -105,7 +107,7 @@ const capitalise = (word) => word.charAt(0).toUpperCase() + word.slice(1);
 
 const parseArguments = (argv) => {
   const [command = 'repeat', ...rest] = argv;
-  const options = { command, day: 'today', items: [], replace: false, dryRun: false, url: undefined };
+  const options = { command, day: 'today', items: [], replace: false, dryRun: false, allowPayment: false, url: undefined };
   const currentItem = () => {
     if (options.items.length === 0) throw new Error('--quantity and --option must come after an --item');
     return options.items.at(-1);
@@ -118,6 +120,7 @@ const parseArguments = (argv) => {
     else if (argument === '--option') currentItem().options.push(rest[++index]);
     else if (argument === '--replace') options.replace = true;
     else if (argument === '--dry-run') options.dryRun = true;
+    else if (argument === '--allow-payment') options.allowPayment = true;
     else if (!argument.startsWith('--')) options.url = argument;
     else throw new Error(`unknown option "${argument}"`);
   }
@@ -198,10 +201,10 @@ const parseItemLine = (text) => {
   return match ? { quantity: Number(match[1]), name: match[2].trim() } : { quantity: 1, name: text.trim() };
 };
 
-/** The options icon's aria-label, "1x NO SAUCE, 1x REMOVE Capsicum" → ["NO SAUCE", "REMOVE Capsicum"]. */
+/** The options icon's aria-label, one "1x <choice>" per line (or comma-separated) → ["NO SAUCE", "REMOVE Capsicum"]. */
 const parseOptionsLabel = (label) =>
   (label ?? '')
-    .split(',')
+    .split(/\r?\n|,/)
     .map((part) => part.replace(/^\s*\d+\s*x\s+/i, '').trim())
     .filter((part) => part.length > 0);
 
@@ -513,6 +516,18 @@ const openMenu = async (page, targetDate) => {
   }
 };
 
+/** The free credits (subsidy) the canteen page shows for the open day, e.g. "18.00 Free Credits" → 18, or null. */
+const readSubsidy = async (page) => {
+  const text = await page
+    .getByText(/^\s*Subsidy\s*$/)
+    .first()
+    .locator('xpath=following::p[1]')
+    .innerText({ timeout: 3_000 })
+    .catch(() => '');
+  const match = /([\d.]+)\s*free credits/i.exec(text);
+  return match ? Number(match[1]) : null;
+};
+
 /** Lists the menu cards on the open canteen page: name, price and whether adding needs options. */
 const readMenu = async (page) =>
   page.evaluate(() => {
@@ -523,8 +538,13 @@ const readMenu = async (page) =>
       if (card === null) continue;
       const buttonLabels = [...card.querySelectorAll('button')].map((button) => button.textContent.trim());
       if (buttonLabels.includes('Cancel')) continue; // an existing order in the "Your Order" section, not a menu item
-      const price = [...card.querySelectorAll('p')].map((paragraph) => paragraph.textContent.trim()).find((text) => /credits/i.test(text)) ?? '';
-      cards.push({ name: title.textContent.trim(), price, hasOptions: buttonLabels.includes('Show Options') });
+      const priceText = [...card.querySelectorAll('p')].map((paragraph) => paragraph.textContent.trim()).find((text) => /credits/i.test(text)) ?? '';
+      const priceMatch = /([\d.]+)/.exec(priceText);
+      cards.push({
+        name: title.textContent.trim(),
+        price: priceMatch ? Number(priceMatch[1]) : null,
+        hasOptions: buttonLabels.includes('Show Options'),
+      });
     }
     return cards;
   });
@@ -547,13 +567,19 @@ const requiredOptionGroups = async (dialog) => {
   return [...text.matchAll(/([^\n]+)\n\s*Select \d+ \(maximum \d+\)/g)].map((match) => match[1].trim());
 };
 
+/** "Choose options to add to cart" while options are missing, "Add 1 to cart (14.75)" once chosen. */
+const ADD_TO_CART_PATTERN = /add( \d+)? to cart/i;
+
 const addItemToCart = async (page, item) => {
   const card = await menuCardFor(page, item.name);
   if (card === null) throw new Error(`"${item.name}" is not on the menu for this day`);
   await card.getByRole('button').last().click();
   const dialog = anyDialog(page);
   await dialog.waitFor({ state: 'visible', timeout: 10_000 });
-  const addButton = dialog.getByRole('button', { name: /add to cart/i }).first();
+  // The dialog opens before its content renders: wait for the item dialog's add button or the cart's Checkout.
+  const addButton = dialog.getByRole('button', { name: ADD_TO_CART_PATTERN }).first();
+  const checkoutButton = dialog.getByRole('button', { name: /^checkout$/i }).first();
+  await addButton.or(checkoutButton).first().waitFor({ state: 'visible', timeout: 10_000 });
   if ((await addButton.count()) > 0) {
     for (const option of item.options) {
       const checkbox = dialog.getByRole('checkbox', { name: exactly(option) }).first();
@@ -587,15 +613,38 @@ const openCart = async (page) => {
   return cart;
 };
 
-const checkout = async (page, items, { dryRun }) => {
+/**
+ * Refuses to check out unless the cart's "Total to pay" is 0.00, i.e. the subsidy covers the
+ * whole order. Fails closed when the total can't be read. --allow-payment is the only override.
+ */
+const assertWithinSubsidy = async (page, cartText, { allowPayment }) => {
+  const totalMatch = /Total to pay\s*([\d.]+) credits/i.exec(cartText);
+  const totalToPay = totalMatch ? Number(totalMatch[1]) : null;
+  if (allowPayment) {
+    log(`--allow-payment given: not checking the subsidy (total to pay ${totalToPay ?? 'unknown'})`);
+    return;
+  }
+  if (totalToPay === null) {
+    await saveDiagnostics(page, 'subsidy-unreadable');
+    throw new Error('could not read "Total to pay" in the cart, so the subsidy could not be verified; not checking out');
+  }
+  if (totalToPay > 0) {
+    await saveDiagnostics(page, 'exceeds-subsidy');
+    throw new Error(`the order exceeds the subsidy: ${totalToPay.toFixed(2)} credits would be charged; not checking out (drop or swap an item, or pass --allow-payment to pay the difference)`);
+  }
+};
+
+const checkout = async (page, items, { dryRun, allowPayment }) => {
   const cart = await openCart(page);
   const cartText = (await cart.innerText()).replace(/\s+/g, ' ');
   for (const item of items) {
     if (!new RegExp(escapeRegExp(item.name), 'i').test(cartText)) throw new Error(`"${item.name}" is not in the cart`);
   }
   const subtotal = /Subtotal \([^)]*\)\s*[\d.]+ credits/i.exec(cartText)?.[0] ?? '(subtotal not shown)';
+  const freeCredits = /Free credits[^\d-]*-?\s*[\d.]+ credits/i.exec(cartText)?.[0] ?? '(free credits not shown)';
   const total = /Total to pay\s*[\d.]+ credits/i.exec(cartText)?.[0] ?? '(total not shown)';
-  log(`cart: ${subtotal}; ${total}`);
+  log(`cart: ${subtotal}; ${freeCredits}; ${total}`);
+  await assertWithinSubsidy(page, cartText, { allowPayment });
   if (dryRun) {
     await saveDiagnostics(page, 'dry-run-before-checkout');
     log('dry run: stopping before Checkout');
@@ -666,9 +715,13 @@ const runOrders = async (page, targetDate) => {
 const runMenu = async (page, targetDate) => {
   await openMenu(page, targetDate);
   const menu = await readMenu(page);
+  const subsidy = await readSubsidy(page);
+  log(`subsidy available for ${formatDay(targetDate)}: ${subsidy === null ? 'unknown' : `${subsidy.toFixed(2)} credits`} — the whole order must fit within it`);
   log(`menu for ${formatDay(targetDate)}: ${menu.length} items`);
   for (const item of menu) {
-    console.log(`  ${item.name} — ${item.price}${item.hasOptions ? ' (needs options)' : ''}`);
+    const price = item.price === null ? '(price not shown)' : `${item.price.toFixed(2)} credits`;
+    const exceeds = subsidy !== null && item.price !== null && item.price > subsidy ? ' (EXCEEDS SUBSIDY on its own)' : '';
+    console.log(`  ${item.name} — ${price}${item.hasOptions ? ' (needs options)' : ''}${exceeds}`);
   }
   if (menu.length === 0) await printSnapshot(page, 'menu');
 };

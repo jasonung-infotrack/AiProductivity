@@ -7,10 +7,13 @@ description: "Log in to EatFirst (eatfirst.com, en-AU) and place, repeat or chan
 
 Place, repeat or change the user's EatFirst canteen order with the Playwright script in this
 skill's `scripts/` directory. There is no static order file: the order is whatever the user had
-on the same weekday last week, or whatever they tell you when they have no history or want a
-change. The script is deterministic where it can be and hands over to you with diagnostics where
-the site's markup doesn't match. Never place a second order on a day that already has one;
-replace it only when the user asked for a change.
+on the same weekday last week (else their most recent order), or whatever they tell you when
+they have no history or want a change. The script is deterministic against the site as verified
+on 2026-09-25 and hands over to you with diagnostics where the markup no longer matches. Never
+place a second order on a day that already has one; replace it only when the user asked for a
+change. Never place an order that exceeds the subsidy: the cart's "Total to pay" must be 0.00
+credits. The script enforces this and only `--allow-payment` overrides it; pass that only when
+the user has explicitly said they will pay the difference.
 
 ## Preflight (stop and report if any fails)
 
@@ -33,8 +36,9 @@ replace it only when the user asked for a change.
 ## Target day
 
 `today` unless the user says otherwise ("tomorrow", a weekday name, or a `YYYY-MM-DD` date).
-A Routine asking for "today's order" means `today`. Pass it as `--day <day>` to every command
-below; the script resolves it in Australia/Sydney.
+Pass it as `--day <day>` to every command below; the script resolves it in Australia/Sydney.
+The canteen closes orders around 11am–noon on the day before, so "today" is usually too late:
+a Routine should run the day before (or earlier) and name the day, e.g. `--day friday`.
 
 ## Decide what to order
 
@@ -44,65 +48,80 @@ Run, from this skill's directory:
 node scripts/eatfirst.mjs orders --day <day>
 ```
 
-It prints the target date, the same weekday last week, the local `order-history.json`, whether
-an order already exists on the target day (a heuristic), and an ARIA snapshot of the site's
-orders page. The site is the source of truth; the local history is a fallback for when the
-snapshot can't be read. Then pick exactly one of these:
+It lists every order on the site's dashboard (most recent first, with chosen options in square
+brackets and whether each can still be cancelled), says whether the target day already has an
+order, what was ordered on the same weekday last week, and exactly what `repeat` would place.
+Then pick exactly one of these:
 
-- **The user named an item** ("order the katsu", "change it to the salad"). That is the order,
-  whatever the history says. Quantity 1 unless they said otherwise.
+- **The user named what they want** ("order the katsu", "change it to the salad"). Place it
+  with `order --item ...` (below), whatever the history says. Items with options (sauce, sub
+  size) need `--option` values; get the choices from `menu` or the item's previous orders, and
+  ask the user if none are known.
 - **An order already exists on the target day.**
-  - The user asked to change it: place the new item with `--replace` (next section), which
-    cancels the existing order first. If they asked for a change without naming the new item,
-    ask them what they want (show the `menu` output, below) before touching anything.
+  - The user asked to change it: place the new items with `--replace`, which cancels the
+    existing order first. If they asked for a change without saying what to, show them the
+    `menu` output and ask before touching anything.
   - The user only wants it cancelled: `node scripts/eatfirst.mjs cancel --day <day>`.
   - Otherwise: report what is already ordered and stop. Don't cancel, don't re-order.
-- **No order that day, and there is history.** Take the order from the same weekday last week:
-  item and quantity as the orders page shows them. If there was no order that day, take the
-  most recent one. Don't ask; just place it.
-- **No history anywhere** (nothing on the orders page, nothing local). This is a first order.
-  Run `node scripts/eatfirst.mjs menu --day <day>`, pull the item names out of the snapshot, and
-  ask the user which one they want and how many (`AskUserQuestion` listing the items when the
-  session is interactive). In a Routine or any other non-interactive run you can't ask, so stop
-  and report that the first order needs their choice. Never guess an item.
+  - `orders` says "cut-off passed" for it: it can't be changed or cancelled any more. Say so.
+- **No order that day, and there is history:** `node scripts/eatfirst.mjs repeat --day <day>`.
+  It orders the same weekday last week, else the most recent order, options included. Don't
+  ask; just run it.
+- **`orders` says `NO HISTORY`:** this is a first order. Run
+  `node scripts/eatfirst.mjs menu --day <day>` and ask the user which items they want, how many,
+  and which options for items marked "needs options" (`AskUserQuestion` when the session is
+  interactive). In a Routine or any other non-interactive run you can't ask, so stop and report
+  that the first order needs their choice. Never guess.
 
 ## Place the order
 
 ```bash
-node scripts/eatfirst.mjs order --day <day> --item "<item>" --quantity <n>
-node scripts/eatfirst.mjs order --day <day> --item "<item>" --quantity <n> --replace   # change an existing order
+node scripts/eatfirst.mjs repeat --day <day>                       # last week's order again
+node scripts/eatfirst.mjs order --day <day> --item "Mt Franklin Water (600ML)" --item "Chicken Schnitzel Salad" --option "NO SAUCE"
+node scripts/eatfirst.mjs order --day <day> --item "<item>" --replace   # change an existing order
 ```
 
-`--item` is matched case-insensitively as a substring of the menu item's name, so the name as it
-appears on the orders page or menu snapshot is enough.
+`--item` is the exact menu name (case-insensitive) and can repeat; `--quantity` and `--option`
+apply to the `--item` just before them. Add `--dry-run` to fill the cart and stop before
+Checkout when the user wants to see it first.
 
-- Exit code 0 with `ORDER PLACED: <item>` means done. The script appends the order to
-  `order-history.json`. Report the item and day. EatFirst emails a confirmation, so the script
-  takes no confirmation screenshot.
-- Exit code 0 with `an order for <day> already exists` means nothing to do. Report that. Only
-  add `--replace` when the user asked for a change.
-- Exit code 1 with `"<item>" is not on the menu for this day` means last week's item isn't
-  available. Run `menu --day <day>` and ask the user to choose from what is (or, non-interactive,
-  stop and report). Don't substitute an item yourself.
-- Any other exit code 1 means the script could not finish. Read the newest
-  `artifacts/*-failure.aria.txt` and `*-failure.png` and continue by hand (next section).
+- Exit 0 with `ORDER PLACED: ...` means done and verified on the dashboard. The script appends
+  it to `order-history.json`. Report the items and day. EatFirst emails a confirmation, so the
+  script takes no confirmation screenshot.
+- Exit 0 with `an order for <day> already exists` means nothing to do. Report that. Only add
+  `--replace` when the user asked for a change.
+- Exit 0 with `NO HISTORY` means nothing to repeat: see the first-order case above.
+- Exit 1 with `"<item>" is not on the menu for this day`: run `menu --day <day>` and ask the
+  user to choose from what is there (non-interactive: stop and report). Don't substitute.
+- Exit 1 with `"<item>" needs options`: the item needs a choice (it names the groups). Ask the
+  user, then rerun `order` with `--option`.
+- Exit 1 with `the order exceeds the subsidy`: it says how much would be charged. Nothing was
+  placed. Tell the user, and ask what to drop or swap (`menu` shows the day's subsidy and flags
+  items that exceed it on their own). Rerun `order` with the smaller set. Only if the user says
+  they want to pay the difference, rerun with `--allow-payment`.
+- Exit 1 with `Checkout was clicked but the dashboard shows no order`: do not retry blindly.
+  Tell the user to check their email before anything else is placed.
+- Any other exit 1: the script could not finish. Read the newest `artifacts/*-failure.aria.txt`
+  and `*-failure.png` and continue by hand (next section).
 
 ## Finishing by hand
 
 The ARIA snapshot shows the page the script stopped on. Drive the rest with a short Playwright
 script of your own (import from the same `playwright` module, reuse
-`eatfirst-storage-state.json` as `storageState` so you're already logged in). Rules:
+`eatfirst-storage-state.json` as `storageState` so you're already logged in). What the script
+knows about the site is in the header comment of `scripts/eatfirst.mjs`. Rules:
 
-- Before adding anything, check the orders page (`https://www.eatfirst.com/en-au/orders`) for
-  an existing order on the target day. If one exists and the user didn't ask for a change, stop
-  and report it. If they did, cancel it there first and confirm it's gone before ordering.
-- Add exactly one item, the one decided above, at the decided quantity.
-- Take a screenshot before the final confirm. Confirm only if the cart matches. If anything
-  looks off (wrong item, wrong day, unexpected price, an upsell modal), stop before confirming
-  and report what you saw.
+- Before adding anything, check the orders dashboard
+  (`https://www.eatfirst.com/en-au/dashboard/canteen-orders`) for an existing order on the
+  target day. If one exists and the user didn't ask for a change, stop and report it. If they
+  did, cancel it there first ("Cancel Order" on its row) and confirm it's gone before ordering.
+- Add exactly the items decided above, at the decided quantities and options.
+- Take a screenshot before Checkout. Continue only if the cart matches and "Total to pay" is
+  0.00 credits. If anything looks off (wrong item, wrong day, a non-zero total, an upsell
+  modal), stop and report what you saw.
 - After a successful confirm, append `{ "action": "placed", "date": "<YYYY-MM-DD>", "weekday":
-  "<weekday>", "item": "<item>", "quantity": <n>, "replaced": <bool>, "at": "<ISO timestamp>" }`
-  to `order-history.json` so next week's run can find it.
+  "<weekday>", "items": [{ "quantity": 1, "name": "<item>", "options": [] }], "replaced": <bool>,
+  "at": "<ISO timestamp>" }` to `order-history.json`.
 - Once a selector you found by hand works, update `scripts/eatfirst.mjs` to use it so the next
   run is deterministic. Mention the change in your report.
 

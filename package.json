@@ -6,6 +6,7 @@
     "check": "node scripts/eatfirst.mjs check",
     "login": "node scripts/eatfirst.mjs login",
     "orders": "node scripts/eatfirst.mjs orders",
+    "repeat": "node scripts/eatfirst.mjs repeat",
     "menu": "node scripts/eatfirst.mjs menu",
     "order": "node scripts/eatfirst.mjs order",
     "cancel": "node scripts/eatfirst.mjs cancel",
