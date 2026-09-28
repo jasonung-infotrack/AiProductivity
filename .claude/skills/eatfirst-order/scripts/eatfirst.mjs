@@ -326,6 +326,16 @@ const dismissCookieBannerIfPresent = async (page) => {
   }
 };
 
+/** A "Write a review" prompt for a past order can pop up over the canteen page and marks the rest of the page aria-hidden, hiding the "Ordering for" heading from role queries until it's closed. */
+const dismissReviewPromptIfPresent = async (page) => {
+  const reviewDialog = page.getByRole('dialog').filter({ hasText: /write a review/i }).first();
+  if (await reviewDialog.isVisible({ timeout: 3_000 }).catch(() => false)) {
+    const closeButton = reviewDialog.getByRole('button', { name: /^close$/i }).or(reviewDialog.locator('button').first());
+    await closeButton.first().click().catch(() => undefined);
+    await reviewDialog.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => undefined);
+  }
+};
+
 const emailField = (page) =>
   page
     .getByLabel(/e-?mail|username/i)
@@ -505,6 +515,7 @@ const openMenu = async (page, targetDate) => {
   await page.goto(menuUrl(targetDate), { waitUntil: 'domcontentloaded' });
   await dismissCookieBannerIfPresent(page);
   await page.waitForLoadState('networkidle').catch(() => undefined);
+  await dismissReviewPromptIfPresent(page);
   const orderingFor = page.getByRole('heading', { name: /ordering for/i }).first();
   if (!(await orderingFor.isVisible({ timeout: 10_000 }).catch(() => false))) {
     throw new Error(`the canteen page did not load a menu for ${formatDay(targetDate)}`);
