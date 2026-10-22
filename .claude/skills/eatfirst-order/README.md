@@ -7,8 +7,10 @@ Logs in to EatFirst and places, repeats or changes a canteen order, either on de
   there was nothing that day, your most recent order), including the options you chose (sauce,
   sub size), which it reads from the orders dashboard.
 - **Menu changed.** If last week's items aren't on this day's menu (say the restaurant switched
-  from Subway to Guzman y Gomez), it orders nothing, shows you the day's menu and asks what you
-  want. On a Routine the run ends with that question; reply in the session and Claude places it.
+  from Subway to Guzman y Gomez), it orders nothing and gives you that day's menu to pick from
+  (choices in the app, or a numbered list you answer with "3 and 7"). Then it asks for any
+  options (sauce, size) and places it. On a Routine with nobody there, the run ends with the
+  numbered menu. Reply in that session and Claude places your order.
 - **First order.** With no history, Claude shows you the day's menu and asks what you want. On a
   Routine it can't ask, so the run stops and tells you a first order needs your choice.
 - **Change.** "Change my order to X" cancels the existing order for that day and places X.

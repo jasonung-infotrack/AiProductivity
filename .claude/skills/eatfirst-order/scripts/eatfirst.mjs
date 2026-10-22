@@ -612,7 +612,10 @@ const addItemToCart = async (page, item) => {
     await clickPlus(dialog, item.quantity - 1);
     if (await addButton.isDisabled()) {
       const groups = await requiredOptionGroups(dialog);
-      throw new Error(`"${item.name}" needs options before it can be added (${groups.join('; ') || 'see the item dialog'}); pass them with --option`);
+      const choices = await dialog.getByRole('checkbox').evaluateAll((boxes) =>
+        boxes.map((box) => box.getAttribute('aria-label') ?? box.closest('label')?.textContent?.trim() ?? '').filter((label) => label.length > 0),
+      );
+      throw new Error(`"${item.name}" needs options before it can be added (${groups.join('; ') || 'see the item dialog'}); choices: ${choices.map((choice) => `"${choice}"`).join(', ') || 'see the item dialog'}; pass them with --option`);
     }
     await addButton.click();
     await page.getByRole('dialog').filter({ hasText: /checkout/i }).first().waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined);
@@ -739,16 +742,16 @@ const runOrders = async (page, targetDate) => {
   if (siteOrders.length === 0) await printSnapshot(page, 'orders page');
 };
 
-/** Prints the open canteen page's menu with prices, the subsidy and which items need options. */
+/** Prints the open canteen page's menu, numbered so the user can pick by number, with prices, the subsidy and which items need options. */
 const printMenu = async (page, targetDate) => {
   const menu = await readMenu(page);
   const subsidy = await readSubsidy(page);
   log(`subsidy available for ${formatDay(targetDate)}: ${subsidy === null ? 'unknown' : `${subsidy.toFixed(2)} credits`} — the whole order must fit within it`);
   log(`menu for ${formatDay(targetDate)}: ${menu.length} items`);
-  for (const item of menu) {
+  for (const [index, item] of menu.entries()) {
     const price = item.price === null ? '(price not shown)' : `${item.price.toFixed(2)} credits`;
     const exceeds = subsidy !== null && item.price !== null && item.price > subsidy ? ' (EXCEEDS SUBSIDY on its own)' : '';
-    console.log(`  ${item.name} — ${price}${item.hasOptions ? ' (needs options)' : ''}${exceeds}`);
+    console.log(`  ${index + 1}. ${item.name} — ${price}${item.hasOptions ? ' (needs options)' : ''}${exceeds}`);
   }
   if (menu.length === 0) await printSnapshot(page, 'menu');
 };

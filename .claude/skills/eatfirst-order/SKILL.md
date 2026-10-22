@@ -70,10 +70,8 @@ Then pick exactly one of these:
   offered (usually because the day's restaurant changed, e.g. Subway last week, Guzman y Gomez
   this week) it places nothing and prints `MENU CHANGED` with the day's menu: see below.
 - **`orders` says `NO HISTORY`:** this is a first order. Run
-  `node scripts/eatfirst.mjs menu --day <day>` and ask the user which items they want, how many,
-  and which options for items marked "needs options" (`AskUserQuestion` when the session is
-  interactive). In a Routine or any other non-interactive run you can't ask, so stop and report
-  that the first order needs their choice. Never guess.
+  `node scripts/eatfirst.mjs menu --day <day>` and let the user pick from it (see "Let the user
+  pick from the menu" below). Never guess.
 
 ## Place the order
 
@@ -94,17 +92,14 @@ Checkout when the user wants to see it first.
   `--replace` when the user asked for a change.
 - Exit 0 with `NO HISTORY` means nothing to repeat: see the first-order case above.
 - Exit 0 with `MENU CHANGED` means last week's order can't be repeated because one or more of
-  its items aren't on this day's menu (it names them, then lists the menu with prices, the
-  subsidy and which items need options). Nothing was placed or cancelled. Ask the user what to
-  order from that menu, how many, and which options for items marked "needs options"
-  (`AskUserQuestion` when interactive; offer the menu items as choices). Never substitute a
-  "similar" item yourself. In a Routine or other non-interactive run, end the run with a short
-  message that says the menu changed, what last week's order was, the day's menu, and asks what
-  they'd like; when they reply in that session, place it with `order --item ...` (check the
-  cut-off hasn't passed). After that, `repeat` picks the new order up next week.
+  its items aren't on this day's menu (usually the restaurant changed). It names the missing
+  items, then prints the day's numbered menu. Nothing was placed or cancelled. Tell the user the
+  menu changed and what last week's order was, then let them pick from the printed menu (next
+  section). Never substitute a "similar" item yourself. After they order, `repeat` picks the new
+  order up next week.
 - Exit 1 with `"<item>" is not on the menu for this day`: nothing was placed or cancelled (the
-  menu is checked before `--replace` cancels anything). Run `menu --day <day>` and ask the user
-  to choose from what is there (non-interactive: stop and report). Don't substitute.
+  menu is checked before `--replace` cancels anything). Run `menu --day <day>` and let the user
+  pick from it (next section). Don't substitute.
 - Exit 1 with `"<item>" needs options`: the item needs a choice (it names the groups). Ask the
   user, then rerun `order` with `--option`.
 - Exit 1 with `the order exceeds the subsidy`: it says how much would be charged. Nothing was
@@ -115,6 +110,36 @@ Checkout when the user wants to see it first.
   Tell the user to check their email before anything else is placed.
 - Any other exit 1: the script could not finish. Read the newest `artifacts/*-failure.aria.txt`
   and `*-failure.png` and continue by hand (next section).
+
+## Let the user pick from the menu
+
+Used for a first order, `MENU CHANGED`, and an item that's not on the menu. Always give the user
+the day's actual menu to choose from (the numbered list `menu` or `repeat` printed), never an
+open "what do you want?".
+
+1. Build the choices from the printed menu. Leave out items marked "EXCEEDS SUBSIDY on its own",
+   but mention them. Each choice is the item's exact name; its description is the price, plus
+   "needs options" where marked.
+2. Ask with `AskUserQuestion`, `multiSelect: true`. Each question takes up to 4 choices and
+   one call takes up to 4 questions, so split a menu of up to 16 items into questions of 4 in
+   menu order ("Menu 1 of 3: which items do you want?", header "Menu 1/3"). The user's "Other"
+   answer covers anything else. For a longer menu, or if `AskUserQuestion` isn't available,
+   show the whole numbered menu in your message (number, name, price, "needs options") and ask
+   them to reply with the numbers they want, e.g. "3 and 7".
+3. For each picked item marked "needs options", run `order --day <day> --item "<item>"
+   --dry-run`. It fails with the required option groups and every choice offered. Ask those choices with
+   `AskUserQuestion` too (one question per group), and ask the quantity only if they asked for
+   more than one.
+4. Place it with `order --item ... --option ...`, which enforces the subsidy (see the outcomes
+   above). If it exceeds the subsidy, show the total and ask what to drop, with the picked items
+   as choices.
+
+In a Routine nobody may be watching. Still ask the same way. If the question can't be asked or
+times out, end the run with the numbered menu as the final message: "<Day>'s menu has changed,
+so last week's <order> can't be repeated. Reply with the numbers you'd like and I'll place it
+before the cut-off." If `PushNotification` is available, send a one-line notification so the
+user sees it. When they reply in that session, check that the cut-off hasn't passed, then do
+steps 3–4.
 
 ## Finishing by hand
 
@@ -142,5 +167,5 @@ knows about the site is in the header comment of `scripts/eatfirst.mjs`. Rules:
 One short message: what was ordered (or cancelled, or why nothing was), for which day, and
 whether it repeated last week's order, replaced an existing one, or came from the user. EatFirst
 sends the confirmation email, so do not take or attach a confirmation screenshot. When the menu
-changed, the report is the question: last week's order, the day's menu, and what they'd like.
+changed and nobody answered, the report is the numbered menu and the question (see above).
 Do not include credentials or the full ARIA snapshot.
