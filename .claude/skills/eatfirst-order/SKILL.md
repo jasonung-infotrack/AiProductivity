@@ -66,7 +66,9 @@ Then pick exactly one of these:
   - `orders` says "cut-off passed" for it: it can't be changed or cancelled any more. Say so.
 - **No order that day, and there is history:** `node scripts/eatfirst.mjs repeat --day <day>`.
   It orders the same weekday last week, else the most recent order, options included. Don't
-  ask; just run it.
+  ask; just run it. It checks the day's menu first, and if that order's items are no longer
+  offered (usually because the day's restaurant changed, e.g. Subway last week, Guzman y Gomez
+  this week) it places nothing and prints `MENU CHANGED` with the day's menu: see below.
 - **`orders` says `NO HISTORY`:** this is a first order. Run
   `node scripts/eatfirst.mjs menu --day <day>` and ask the user which items they want, how many,
   and which options for items marked "needs options" (`AskUserQuestion` when the session is
@@ -91,8 +93,18 @@ Checkout when the user wants to see it first.
 - Exit 0 with `an order for <day> already exists` means nothing to do. Report that. Only add
   `--replace` when the user asked for a change.
 - Exit 0 with `NO HISTORY` means nothing to repeat: see the first-order case above.
-- Exit 1 with `"<item>" is not on the menu for this day`: run `menu --day <day>` and ask the
-  user to choose from what is there (non-interactive: stop and report). Don't substitute.
+- Exit 0 with `MENU CHANGED` means last week's order can't be repeated because one or more of
+  its items aren't on this day's menu (it names them, then lists the menu with prices, the
+  subsidy and which items need options). Nothing was placed or cancelled. Ask the user what to
+  order from that menu, how many, and which options for items marked "needs options"
+  (`AskUserQuestion` when interactive; offer the menu items as choices). Never substitute a
+  "similar" item yourself. In a Routine or other non-interactive run, end the run with a short
+  message that says the menu changed, what last week's order was, the day's menu, and asks what
+  they'd like; when they reply in that session, place it with `order --item ...` (check the
+  cut-off hasn't passed). After that, `repeat` picks the new order up next week.
+- Exit 1 with `"<item>" is not on the menu for this day`: nothing was placed or cancelled (the
+  menu is checked before `--replace` cancels anything). Run `menu --day <day>` and ask the user
+  to choose from what is there (non-interactive: stop and report). Don't substitute.
 - Exit 1 with `"<item>" needs options`: the item needs a choice (it names the groups). Ask the
   user, then rerun `order` with `--option`.
 - Exit 1 with `the order exceeds the subsidy`: it says how much would be charged. Nothing was
@@ -129,5 +141,6 @@ knows about the site is in the header comment of `scripts/eatfirst.mjs`. Rules:
 
 One short message: what was ordered (or cancelled, or why nothing was), for which day, and
 whether it repeated last week's order, replaced an existing one, or came from the user. EatFirst
-sends the confirmation email, so do not take or attach a confirmation screenshot. Do not include
-credentials or the full ARIA snapshot.
+sends the confirmation email, so do not take or attach a confirmation screenshot. When the menu
+changed, the report is the question: last week's order, the day's menu, and what they'd like.
+Do not include credentials or the full ARIA snapshot.
