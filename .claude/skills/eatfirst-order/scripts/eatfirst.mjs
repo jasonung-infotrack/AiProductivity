@@ -603,11 +603,21 @@ const addItemToCart = async (page, item) => {
   await addButton.or(checkoutButton).first().waitFor({ state: 'visible', timeout: 10_000 });
   if ((await addButton.count()) > 0) {
     for (const option of item.options) {
-      const checkbox = dialog.getByRole('checkbox', { name: exactly(option) }).first();
-      if (!(await checkbox.isVisible({ timeout: 3_000 }).catch(() => false))) {
+      // The same choice can appear in several groups (e.g. "Ground Beef" as a main filling and as an
+      // extra filling). Once a "Select 1" group is satisfied its other boxes are disabled, so pick the
+      // first checkbox with that name that is still enabled and not yet checked; else fall back to the first.
+      const candidates = dialog.getByRole('checkbox', { name: exactly(option) });
+      if (!(await candidates.first().isVisible({ timeout: 3_000 }).catch(() => false))) {
         throw new Error(`option "${option}" was not offered for "${item.name}"`);
       }
-      await checkbox.check();
+      let checkbox = candidates.first();
+      for (const candidate of await candidates.all()) {
+        if ((await candidate.isEnabled()) && !(await candidate.isChecked())) {
+          checkbox = candidate;
+          break;
+        }
+      }
+      if (!(await checkbox.isChecked())) await checkbox.check();
     }
     await clickPlus(dialog, item.quantity - 1);
     if (await addButton.isDisabled()) {
