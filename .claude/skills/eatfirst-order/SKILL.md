@@ -1,6 +1,6 @@
 ---
 name: eatfirst-order
-description: "Log in to EatFirst (eatfirst.com, en-AU) and place, repeat or change the user's canteen order. Repeats what they ordered last week, asks them for a first order, and replaces an existing order when they want something different. Use when asked to order lunch, place or change the EatFirst order, or when a Routine fires with 'order from EatFirst'. Triggers on: 'eatfirst', 'order lunch', 'place my order', 'change my order', 'canteen order'."
+description: "Log in to EatFirst (eatfirst.com, en-AU) and place, repeat or change the user's canteen order. Repeats what they ordered last week, asks them for a first order, and replaces an existing order when they want something different. Also checks the day's menu for options that lower an item's price and tells the user. Use when asked to order lunch, place or change the EatFirst order, or when a Routine fires with 'order from EatFirst'. Triggers on: 'eatfirst', 'order lunch', 'place my order', 'change my order', 'canteen order'."
 ---
 
 # EatFirst Order
@@ -141,6 +141,31 @@ before the cut-off." If `PushNotification` is available, send a one-line notific
 user sees it. When they reply in that session, check that the cut-off hasn't passed, then do
 steps 3–4.
 
+## Price check (every run)
+
+After the order step, whatever its outcome (placed, already ordered, `MENU CHANGED`, a failure),
+run:
+
+```bash
+node scripts/eatfirst.mjs price-check --day <day>
+```
+
+It opens every item that has options, ticks the required choices, then ticks each other option
+one at a time and reads the live price on the add button. It never clicks add, so nothing is
+ordered, and it takes a couple of minutes. An option that makes the item cheaper than without it
+(a filling or extra with a negative price, or required choices that undercut the listed price)
+is printed as `PRICE EXPLOIT: "<item>" — ticking "<option>" (<group>) makes it X credits, ...`.
+
+- `NO PRICE EXPLOITS`: add one line to the report, "Price check: nothing unusual".
+- `PRICE EXPLOITS FOUND`: tell the user each one in the report: the item, the option, the price
+  with it and the price without. If `PushNotification` is available, send a one-line
+  notification too. Only inform: never change, replace or re-place the order to use one unless
+  the user asks.
+- Items listed as "could not be checked": name them in the report. If the command itself fails,
+  say the price check didn't run. Neither changes the order's outcome.
+
+Skip it only when preflight failed or the day has no menu.
+
 ## Finishing by hand
 
 The ARIA snapshot shows the page the script stopped on. Drive the rest with a short Playwright
@@ -165,7 +190,8 @@ knows about the site is in the header comment of `scripts/eatfirst.mjs`. Rules:
 ## Report
 
 One short message: what was ordered (or cancelled, or why nothing was), for which day, and
-whether it repeated last week's order, replaced an existing one, or came from the user. EatFirst
+whether it repeated last week's order, replaced an existing one, or came from the user. Then the
+price check result: any `PRICE EXPLOIT` lines in plain words, or that nothing unusual was found. EatFirst
 sends the confirmation email, so do not take or attach a confirmation screenshot. When the menu
 changed and nobody answered, the report is the numbered menu and the question (see above).
 Do not include credentials or the full ARIA snapshot.

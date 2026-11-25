@@ -21,6 +21,10 @@ Logs in to EatFirst and places, repeats or changes a canteen order, either on de
   If last week's order no longer fits, it stops and says how much would be charged; `menu` shows
   the day's subsidy and flags items that exceed it. `--allow-payment` is the only override.
 
+- **Price check.** Every run also ticks each option of each item on the day's menu (without
+  adding anything to the cart) and tells you if one makes an item cheaper than it should be, e.g.
+  an extra with a negative price. It only reports; it never changes your order to use one.
+
 ## One-off setup
 
 1. **Credentials** — copy `.env.example` to `.env` (gitignored) and fill in `EATFIRST_EMAIL`
@@ -44,6 +48,7 @@ npm run repeat -- --day friday                  # places it
 npm run order -- --day friday --item "Mt Franklin Water (600ML)" --item "Chicken Schnitzel Salad" --option "NO SAUCE"
 npm run order -- --day friday --item "Steak Melt" --option "NO SAUCE" --replace   # cancels Friday's order, then orders this
 npm run cancel -- --day friday                  # cancels Friday's order
+npm run price-check -- --day friday             # reports any option that lowers an item's price; orders nothing
 ```
 
 `--day` accepts `today` (the default), `tomorrow`, a weekday name, or `YYYY-MM-DD`, resolved in
