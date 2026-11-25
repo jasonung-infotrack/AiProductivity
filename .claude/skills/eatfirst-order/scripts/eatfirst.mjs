@@ -13,6 +13,8 @@
  *   node scripts/eatfirst.mjs order --item "<name>" [--quantity N] [--option "<choice>"]... [--item ...] [--day <day>] [--replace] [--dry-run]
  *       # order exactly these items; --quantity and --option apply to the --item before them
  *   node scripts/eatfirst.mjs cancel [--day <day>]          # cancel the existing order for that day
+ *   node scripts/eatfirst.mjs price-check [--day <day>] [--item "<name>"]...
+ *       # tick every option of every item (or just the named ones) and report any that lowers the price; adds nothing to the cart
  *   node scripts/eatfirst.mjs inspect [url]                 # dump a page snapshot for debugging
  *
  * <day> is "today" (default), "tomorrow", a weekday name, or YYYY-MM-DD, resolved in Australia/Sydney.
@@ -34,6 +36,11 @@
  *     unnamed add button. Add opens either the cart dialog (heading "Your Order", "Checkout")
  *     or, for items with options, an item dialog with checkboxes and a "... add to cart" button
  *     that stays disabled until the required options are chosen.
+ *   - (verified 2026-11-25) The item dialog groups its checkboxes in cards, each with an h6 heading
+ *     and a chip: "Select 1 (maximum 1)" for a required group, "(maximum 6)" or nothing for an
+ *     optional one. The price under the dialog's heading is the listed price and never changes;
+ *     the live price is only in the add button, "Add 1 to cart (17.20)", once the required
+ *     groups are satisfied.
  *
  * Environment (shell variables, or a .env file in the working directory — shell wins):
  *   EATFIRST_EMAIL, EATFIRST_PASSWORD   credentials (never printed; copy .env.example to .env)
@@ -551,6 +558,7 @@ const readMenu = async (page) =>
       if (card === null) continue;
       const buttonLabels = [...card.querySelectorAll('button')].map((button) => button.textContent.trim());
       if (buttonLabels.includes('Cancel')) continue; // an existing order in the "Your Order" section, not a menu item
+      if (card.querySelectorAll('.MuiCardHeader-title').length > 1) continue; // the "Showing N items" header, whose nearest button-holding ancestor is the whole list
       const priceText = [...card.querySelectorAll('p')].map((paragraph) => paragraph.textContent.trim()).find((text) => /credits/i.test(text)) ?? '';
       const priceMatch = /([\d.]+)/.exec(priceText);
       cards.push({
@@ -637,6 +645,142 @@ const addItemToCart = async (page, item) => {
   }
   log(`added ${item.quantity}x "${item.name}"${item.options.length > 0 ? ` [${item.options.join(', ')}]` : ''}`);
   await closeDialogs(page);
+};
+
+// ---------------------------------------------------------------------------------------------
+// Price check: does ticking any option make an item cheaper than it should be?
+// ---------------------------------------------------------------------------------------------
+
+/** "Add 1 to cart (17.20)" → 17.2; null while the required options are missing ("Choose options to add to cart"). */
+const parseAddToCartPrice = (buttonText) => {
+  const match = /\((-?\d+(?:\.\d+)?)\)/.exec(buttonText ?? '');
+  return match ? Number(match[1]) : null;
+};
+
+/** "Select 1 (maximum 1)" → 1; "(maximum 6)" or "" → 0 (an optional group). */
+const requiredCountFromChip = (chipText) => {
+  const match = /select\s+(\d+)/i.exec(chipText ?? '');
+  return match ? Number(match[1]) : 0;
+};
+
+/**
+ * Turns the prices seen while ticking options into findings. `listedPrice` is the menu's price,
+ * `baseline` the price with only the required choices ticked, and each observation the price with
+ * one option ticked on top of (or, for a required group, swapped into) that baseline. An option is
+ * a finding when it makes the item cheaper than the baseline; the baseline itself is one when the
+ * required choices alone already undercut the listed price.
+ */
+const findPriceDrops = ({ listedPrice, baseline, observations }) => {
+  const cents = (value) => Math.round(value * 100);
+  const findings = [];
+  if (listedPrice !== null && cents(baseline.price) < cents(listedPrice)) {
+    findings.push({ group: 'required choices', option: baseline.choices.join(' + ') || '(none)', price: baseline.price, comparedTo: listedPrice, belowListed: true });
+  }
+  for (const observation of observations) {
+    if (cents(observation.price) >= cents(baseline.price)) continue;
+    findings.push({
+      group: observation.group,
+      option: observation.option,
+      price: observation.price,
+      comparedTo: baseline.price,
+      belowListed: listedPrice !== null && cents(observation.price) < cents(listedPrice),
+    });
+  }
+  return findings;
+};
+
+/** The item dialog's option groups: heading, how many choices are required, and each checkbox's position among the dialog's checkboxes. */
+const readOptionGroups = async (dialog) =>
+  dialog.evaluate((dialogElement) => {
+    const checkboxes = [...dialogElement.querySelectorAll('input[type="checkbox"]')];
+    const groups = [];
+    for (const heading of dialogElement.querySelectorAll('h6')) {
+      let container = heading.parentElement;
+      while (container !== null && container !== dialogElement && container.querySelector('input[type="checkbox"]') === null) container = container.parentElement;
+      // A heading that isn't a group's (e.g. "Overview") only reaches checkboxes in a container that holds several headings.
+      if (container === null || container === dialogElement || container.querySelectorAll('h6').length !== 1) continue;
+      groups.push({
+        name: heading.textContent.trim(),
+        chip: container.querySelector('.MuiChip-label')?.textContent.trim() ?? '',
+        options: [...container.querySelectorAll('input[type="checkbox"]')].map((checkbox) => ({
+          index: checkboxes.indexOf(checkbox),
+          name: checkbox.getAttribute('aria-label') ?? checkbox.closest('label')?.querySelector('p')?.textContent.trim() ?? '',
+        })),
+      });
+    }
+    return groups;
+  });
+
+/**
+ * Opens an item's dialog, ticks the required choices, then ticks every other option one at a time
+ * (swapping within required groups) and reads the add button's price each time. Never clicks the
+ * add button, so nothing reaches the cart. Returns the findings from `findPriceDrops`.
+ */
+const scanItemForPriceDrops = async (page, menuItem) => {
+  const card = await menuCardFor(page, menuItem.name);
+  if (card === null) throw new Error(`"${menuItem.name}" is not on the menu for this day`);
+  await card.getByRole('button').last().click();
+  const dialog = anyDialog(page);
+  await dialog.waitFor({ state: 'visible', timeout: 10_000 });
+  const addButton = dialog.getByRole('button', { name: ADD_TO_CART_PATTERN }).first();
+  const checkoutButton = dialog.getByRole('button', { name: /^checkout$/i }).first();
+  await addButton.or(checkoutButton).first().waitFor({ state: 'visible', timeout: 10_000 });
+  if ((await addButton.count()) === 0) {
+    // "Show Options" on the card doesn't guarantee an options dialog (e.g. Fries): the click put the
+    // item straight into the cart, so take it out again. The cart doesn't outlive the browser session.
+    const itemInCart = dialog.getByText(exactly(menuItem.name)).first();
+    // The scan never adds anything else, so this item's "Remove" is the only one in the cart.
+    await dialog.getByRole('button', { name: /^remove$/i }).first().click({ timeout: 10_000 });
+    await itemInCart.waitFor({ state: 'hidden', timeout: 5_000 });
+    await closeDialogs(page);
+    return { hasOptionsDialog: false };
+  }
+  const checkboxes = dialog.getByRole('checkbox');
+  const livePrice = async () => parseAddToCartPrice(await addButton.innerText());
+  const groups = (await readOptionGroups(dialog)).map((group) => ({ ...group, required: requiredCountFromChip(group.chip) }));
+
+  const baselineChoices = [];
+  for (const group of groups) {
+    for (const option of group.options.slice(0, group.required)) {
+      await checkboxes.nth(option.index).check();
+      baselineChoices.push(option);
+    }
+  }
+  const baselinePrice = await livePrice();
+  if (baselinePrice === null) {
+    throw new Error(`could not read a price for "${menuItem.name}" after ticking its required choices (add button says "${(await addButton.innerText()).trim()}")`);
+  }
+
+  const observations = [];
+  let skipped = 0;
+  for (const group of groups) {
+    const chosenInGroup = group.options.filter((option) => baselineChoices.includes(option));
+    // In a satisfied required group the other boxes are disabled, so swap: untick the last chosen one first.
+    const swappedOut = group.required > 0 ? chosenInGroup.at(-1) : undefined;
+    for (const option of group.options) {
+      if (baselineChoices.includes(option)) continue;
+      const checkbox = checkboxes.nth(option.index);
+      if (swappedOut) await checkboxes.nth(swappedOut.index).uncheck();
+      if (await checkbox.isEnabled()) {
+        await checkbox.check();
+        const price = await livePrice();
+        await checkbox.uncheck();
+        if (price === null) skipped += 1;
+        else observations.push({ group: group.name, option: swappedOut ? `${option.name} (instead of ${swappedOut.name})` : option.name, price });
+      } else {
+        skipped += 1;
+      }
+      if (swappedOut) await checkboxes.nth(swappedOut.index).check();
+    }
+  }
+  await closeDialogs(page);
+  return {
+    hasOptionsDialog: true,
+    findings: findPriceDrops({ listedPrice: menuItem.price, baseline: { price: baselinePrice, choices: baselineChoices.map((option) => option.name) }, observations }),
+    baselinePrice,
+    tested: observations.length,
+    skipped,
+  };
 };
 
 const openCart = async (page) => {
@@ -771,6 +915,49 @@ const runMenu = async (page, targetDate) => {
   await printMenu(page, targetDate);
 };
 
+/**
+ * Reports every option that makes an item cheaper: "PRICE EXPLOIT: ..." per finding, then one
+ * summary line. Checks every item with options, or only the named ones. Read-only: nothing is
+ * added to the cart, placed or cancelled.
+ */
+const runPriceCheck = async (page, targetDate, options) => {
+  await openMenu(page, targetDate);
+  const menu = await readMenu(page);
+  const wanted = new Set(options.items.map((item) => normaliseName(item.name)));
+  const missing = options.items.filter((item) => !menu.some((card) => normaliseName(card.name) === normaliseName(item.name)));
+  if (missing.length > 0) throw new Error(`${missing.map((item) => `"${item.name}"`).join(', ')} is not on the menu for this day`);
+  const toScan = menu.filter((card) => card.hasOptions && (wanted.size === 0 || wanted.has(normaliseName(card.name))));
+  log(`price check for ${formatDay(targetDate)}: ${toScan.length} items with options`);
+  let findingCount = 0;
+  let withoutOptions = 0;
+  const unchecked = [];
+  for (const menuItem of toScan) {
+    try {
+      const result = await scanItemForPriceDrops(page, menuItem);
+      if (!result.hasOptionsDialog) {
+        withoutOptions += 1;
+        console.log(`  ${menuItem.name}: no options to tick`);
+        continue;
+      }
+      const listed = menuItem.price === null ? 'not shown' : menuItem.price.toFixed(2);
+      for (const finding of result.findings) {
+        findingCount += 1;
+        const saving = (finding.comparedTo - finding.price).toFixed(2);
+        console.log(`  PRICE EXPLOIT: "${menuItem.name}" — ticking "${finding.option}" (${finding.group}) makes it ${finding.price.toFixed(2)} credits, ${saving} less than ${finding.comparedTo.toFixed(2)}${finding.belowListed ? ` and below the listed ${listed}` : ` (listed ${listed})`}`);
+      }
+      console.log(`  ${menuItem.name}: listed ${listed}, ${result.baselinePrice.toFixed(2)} with required choices, ${result.tested} options tested${result.skipped > 0 ? `, ${result.skipped} could not be tested` : ''}, ${result.findings.length} price drops`);
+    } catch (error) {
+      unchecked.push(menuItem.name);
+      console.log(`  ${menuItem.name}: could not be checked — ${String(error.message).split('\n')[0]}`);
+      await closeDialogs(page);
+    }
+  }
+  const uncheckedNote = unchecked.length > 0 ? `; could not check: ${unchecked.map((name) => `"${name}"`).join(', ')}` : '';
+  const checkedCount = toScan.length - unchecked.length - withoutOptions;
+  if (findingCount > 0) log(`PRICE EXPLOITS FOUND: ${findingCount} across ${checkedCount} items for ${formatDay(targetDate)} (listed above)${uncheckedNote}`);
+  else log(`NO PRICE EXPLOITS: no option lowers the price of any of the ${checkedCount} items checked for ${formatDay(targetDate)}${uncheckedNote}`);
+};
+
 const runRepeat = async (page, targetDate, options) => {
   const siteOrders = await readSiteOrders(page);
   const existing = ordersOn(siteOrders, targetDate);
@@ -863,6 +1050,9 @@ const main = async () => {
     } else if (options.command === 'order') {
       await ensureLoggedIn(page);
       await runOrder(page, targetDate, options);
+    } else if (options.command === 'price-check') {
+      await ensureLoggedIn(page);
+      await runPriceCheck(page, targetDate, options);
     } else if (options.command === 'cancel') {
       await ensureLoggedIn(page);
       await runCancel(page, targetDate);
@@ -882,6 +1072,7 @@ const main = async () => {
 export {
   resolveTargetDate, describeDate, addDays, formatLongDate, parseLongDate, parseArguments,
   parseItemLine, parseOptionsLabel, chooseRepeat, itemsAsArguments,
+  parseAddToCartPrice, requiredCountFromChip, findPriceDrops,
 };
 
 const isDirectRun = process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
